@@ -1,0 +1,95 @@
+name: Deploy Backend via Frontend Jump Host
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  build-and-push:
+    name: Build & Push Backend Image to ECR
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ap-south-1
+
+      - name: Log in to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and Push Backend Image
+        env:
+          ECR_REGISTRY: ${{ secrets.ECR_REGISTRY }}
+          ECR_REPO: ${{ secrets.ECR_BACKEND_REPO }}
+          IMAGE_TAG: latest
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_REPO:$IMAGE_TAG .
+          docker push $ECR_REGISTRY/$ECR_REPO:$IMAGE_TAG
+
+  deploy-backend:
+    name: Deploy to Backend via Jump Host Domain
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Copy docker-compose.yml via Jump Host Domain
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          # Target Host (Private Backend EC2)
+          host: ${{ secrets.BACKEND_PRIVATE_IP }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+
+          # Proxy / Jump Host (Domain Name)
+          proxy_host: ${{ secrets.FRONTEND_EC2_HOST }}
+          proxy_port: 22
+          proxy_username: ${{ secrets.EC2_USER }}
+          proxy_key: ${{ secrets.EC2_SSH_KEY }}
+
+          source: "docker-compose.yml"
+          target: "~/backend/"
+          rm: false
+
+      - name: Pull and Run on Backend via Jump Host Domain
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          ECR_REGISTRY: ${{ secrets.ECR_REGISTRY }}
+          AWS_REGION: ap-south-1
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        with:
+          # Target Host (Private Backend EC2)
+          host: ${{ secrets.BACKEND_PRIVATE_IP }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+
+          # Proxy / Jump Host (Domain Name)
+          proxy_host: ${{ secrets.FRONTEND_EC2_HOST }}
+          proxy_port: 22
+          proxy_username: ${{ secrets.EC2_USER }}
+          proxy_key: ${{ secrets.EC2_SSH_KEY }}
+
+          timeout: 45s
+          proxy_timeout: 45s
+          command_timeout: 10m
+          envs: ECR_REGISTRY,AWS_REGION,AWS_ACCESS_KEY_ID,AWS_SECRET_ACCESS_KEY
+          script: |
+            mkdir -p ~/backend
+            cd ~/backend || exit 1
+
+            # Log into ECR on backend EC2
+            aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY
+
+            # Pull latest image and restart container
+            docker compose pull
+            docker compose down
+            docker compose up -d --remove-orphans
+            docker image prune -f
