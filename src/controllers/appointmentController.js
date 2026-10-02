@@ -14,6 +14,15 @@ exports.createAppointment = async (req, res) => {
     );
 
     if (conflict.length > 0) {
+      // AUDIT LOG: Booking Conflict
+      console.log(JSON.stringify({
+        level: 'warn',
+        event: 'booking_conflict',
+        userId: user_id,
+        date: appointment_date,
+        slot: time_slot,
+        timestamp: new Date().toISOString()
+      }));
       return res.status(409).json({ success: false, message: 'This slot is already reserved. Please select another slot.' });
     }
 
@@ -22,13 +31,30 @@ exports.createAppointment = async (req, res) => {
       [user_id, problem_type, appointment_date, time_slot, notes || '']
     );
 
+    // AUDIT LOG: Successful Booking
+    console.log(JSON.stringify({
+      level: 'info',
+      event: 'appointment_booked',
+      userId: user_id,
+      appointmentId: result.insertId,
+      problem: problem_type,
+      timestamp: new Date().toISOString()
+    }));
+
     return res.status(201).json({
       success: true,
       message: 'Appointment booked successfully.',
       appointmentId: result.insertId
     });
   } catch (error) {
-    console.error('Error creating appointment:', error);
+    // AUDIT LOG: Database Error
+    console.log(JSON.stringify({
+      level: 'error',
+      event: 'database_error',
+      action: 'create_appointment',
+      error: error.message,
+      timestamp: new Date().toISOString()
+    }));
     return res.status(500).json({ success: false, message: 'Database error while booking.' });
   }
 };
@@ -53,7 +79,13 @@ exports.getAllAppointments = async (req, res) => {
 
     return res.status(200).json({ success: true, data: rows });
   } catch (error) {
-    console.error('Error fetching appointments:', error);
+    console.log(JSON.stringify({
+      level: 'error',
+      event: 'database_error',
+      action: 'get_all_appointments',
+      error: error.message,
+      timestamp: new Date().toISOString()
+    }));
     return res.status(500).json({ success: false, message: 'Failed to retrieve appointments.' });
   }
 };
@@ -68,9 +100,25 @@ exports.updateStatus = async (req, res) => {
 
   try {
     await pool.query('UPDATE appointments SET status = ? WHERE id = ?', [status, id]);
+    
+    // AUDIT LOG: Status Changed (e.g., Cancelled or Completed)
+    console.log(JSON.stringify({
+      level: 'info',
+      event: 'appointment_status_updated',
+      appointmentId: id,
+      newStatus: status,
+      timestamp: new Date().toISOString()
+    }));
+
     return res.status(200).json({ success: true, message: `Status updated to ${status}.` });
   } catch (error) {
-    console.error('Error updating status:', error);
+    console.log(JSON.stringify({
+      level: 'error',
+      event: 'database_error',
+      action: 'update_status',
+      error: error.message,
+      timestamp: new Date().toISOString()
+    }));
     return res.status(500).json({ success: false, message: 'Status update failed.' });
   }
 };
